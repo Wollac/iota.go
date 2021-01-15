@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	// Defines the milestone payload's ID.
+	// Defines the Milestone payload's ID.
 	MilestonePayloadTypeID uint32 = 1
 	// Defines the length of the inclusion merkle proof within a milestone payload.
 	MilestoneInclusionMerkleProofLength = blake2b.Size256
@@ -127,6 +127,8 @@ type Milestone struct {
 	InclusionMerkleProof MilestoneInclusionMerkleProof
 	// The public keys validating the signatures of the milestone.
 	PublicKeys []MilestonePublicKey
+	// The inner payload of the milestone. Can be nil or a Receipt.
+	Receipt Serializable
 	// The signatures held by the milestone.
 	Signatures []MilestoneSignature
 }
@@ -167,6 +169,9 @@ func (m *Milestone) Essence() ([]byte, error) {
 		}).
 		Write32BytesArraySlice(m.PublicKeys, SeriSliceLengthAsByte, func(err error) error {
 			return fmt.Errorf("unable to serialize milestone public keys for essence: %w", err)
+		}).
+		WritePayload(m.Receipt, DeSeriModePerformValidation, func(err error) error {
+			return fmt.Errorf("unable to serialize milestone receipt for essence: %w", err)
 		}).
 		Serialize()
 }
@@ -344,6 +349,20 @@ func (m *Milestone) Deserialize(data []byte, deSeriMode DeSerializationMode) (in
 			}
 			return nil
 		}).
+		ReadPayload(func(seri Serializable) { m.Receipt = seri }, deSeriMode, func(err error) error {
+			return fmt.Errorf("unable to deserialize milestone receipt: %w", err)
+		}).
+		AbortIf(func(err error) error {
+			if deSeriMode.HasMode(DeSeriModePerformValidation) {
+				if m.Receipt != nil {
+					// supports only receipts
+					if _, isReceiptPayload := m.Receipt.(*Indexation); !isReceiptPayload {
+						return fmt.Errorf("%w: milestones only allow embedded receipt payloads but got %T instead", ErrInvalidBytes, m.Receipt)
+					}
+				}
+			}
+			return nil
+		}).
 		ReadSliceOfArraysOf64Bytes(&m.Signatures, SeriSliceLengthAsByte, func(err error) error {
 			return fmt.Errorf("unable to deserialize milestone public keys: %w", err)
 		}).
@@ -357,6 +376,13 @@ func (m *Milestone) Deserialize(data []byte, deSeriMode DeSerializationMode) (in
 }
 
 func (m *Milestone) Serialize(deSeriMode DeSerializationMode) ([]byte, error) {
+	if deSeriMode.HasMode(DeSeriModePerformValidation) {
+		if m.Receipt != nil {
+			if _, isReceiptPayload := m.Receipt.(*Indexation); !isReceiptPayload {
+				return nil, fmt.Errorf("%w: milestones only allow embedded receipt payloads but got %T instead", ErrInvalidBytes, m.Receipt)
+			}
+		}
+	}
 	return NewSerializer().
 		AbortIf(func(err error) error {
 			if deSeriMode.HasMode(DeSeriModePerformValidation) {
@@ -401,6 +427,9 @@ func (m *Milestone) Serialize(deSeriMode DeSerializationMode) ([]byte, error) {
 		Write32BytesArraySlice(m.PublicKeys, SeriSliceLengthAsByte, func(err error) error {
 			return fmt.Errorf("unable to serialize milestone public keys: %w", err)
 		}).
+		WritePayload(m.Receipt, deSeriMode, func(err error) error {
+			return fmt.Errorf("unable to serialize milestone receipt: %w", err)
+		}).
 		Write64BytesArraySlice(m.Signatures, SeriSliceLengthAsByte, func(err error) error {
 			return fmt.Errorf("unable to serialize milestone signatures: %w", err)
 		}).
@@ -444,14 +473,15 @@ func (m *Milestone) UnmarshalJSON(bytes []byte) error {
 
 // jsonmilestonepayload defines the json representation of a Milestone.
 type jsonmilestonepayload struct {
-	Type                 int      `json:"type"`
-	Index                int      `json:"index"`
-	Timestamp            int      `json:"timestamp"`
-	Parent1              string   `json:"parent1MessageId"`
-	Parent2              string   `json:"parent2MessageId"`
-	InclusionMerkleProof string   `json:"inclusionMerkleProof"`
-	PublicKeys           []string `json:"publicKeys"`
-	Signatures           []string `json:"signatures"`
+	Type                 int              `json:"type"`
+	Index                int              `json:"index"`
+	Timestamp            int              `json:"timestamp"`
+	Parent1              string           `json:"parent1MessageId"`
+	Parent2              string           `json:"parent2MessageId"`
+	InclusionMerkleProof string           `json:"inclusionMerkleProof"`
+	PublicKeys           []string         `json:"publicKeys"`
+	Receipt              *json.RawMessage `json:"receipt"`
+	Signatures           []string         `json:"signatures"`
 }
 
 func (j *jsonmilestonepayload) ToSerializable() (Serializable, error) {
@@ -484,6 +514,20 @@ func (j *jsonmilestonepayload) ToSerializable() (Serializable, error) {
 			return nil, fmt.Errorf("unable to decode public key from JSON for milestone payload at pos %d: %w", i, err)
 		}
 		copy(payload.PublicKeys[i][:], pubKeyBytes)
+	}
+
+	if j.Receipt != nil {
+		jsonPayload, err := DeserializeObjectFromJSON(j.Receipt, func(ty int) (JSONSerializable, error) {
+			return &jsonreceiptpayload{}, nil
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		payload.Receipt, err = jsonPayload.ToSerializable()
+		if err != nil {
+			return nil, fmt.Errorf("unable to decode inner milestone receipt: %w", err)
+		}
 	}
 
 	payload.Signatures = make([]MilestoneSignature, len(j.Signatures))

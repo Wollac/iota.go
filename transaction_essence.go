@@ -53,7 +53,7 @@ var (
 	ErrOutputDustAllowanceLessThanMinDeposit = errors.New("dust allowance output deposits less than the minimum required amount")
 
 	// restrictions around input within a transaction.
-	inputsArrayBound = ArrayRules{
+	inputsArrayRules = ArrayRules{
 		Min:                         MinInputsCount,
 		Max:                         MaxInputsCount,
 		MinErr:                      ErrMinInputsNotReached,
@@ -63,7 +63,7 @@ var (
 	}
 
 	// restrictions around outputs within a transaction.
-	outputsArrayBound = ArrayRules{
+	outputsArrayRules = ArrayRules{
 		Min:                         MinInputsCount,
 		Max:                         MaxInputsCount,
 		MinErr:                      ErrMinOutputsNotReached,
@@ -118,7 +118,7 @@ func (u *TransactionEssence) Deserialize(data []byte, deSeriMode DeSerialization
 		Skip(SmallTypeDenotationByteSize, func(err error) error {
 			return fmt.Errorf("unable to skip transaction essence ID during deserialization: %w", err)
 		}).
-		ReadSliceOfObjects(func(seri Serializables) { u.Inputs = seri }, deSeriMode, TypeDenotationByte, InputSelector, &inputsArrayBound, func(err error) error {
+		ReadSliceOfObjects(func(seri Serializables) { u.Inputs = seri }, deSeriMode, TypeDenotationByte, InputSelector, &inputsArrayRules, func(err error) error {
 			return fmt.Errorf("unable to deserialize inputs of transaction essence: %w", err)
 		}).
 		AbortIf(func(err error) error {
@@ -129,7 +129,7 @@ func (u *TransactionEssence) Deserialize(data []byte, deSeriMode DeSerialization
 			}
 			return nil
 		}).
-		ReadSliceOfObjects(func(seri Serializables) { u.Outputs = seri }, deSeriMode, TypeDenotationByte, OutputSelector, &inputsArrayBound, func(err error) error {
+		ReadSliceOfObjects(func(seri Serializables) { u.Outputs = seri }, deSeriMode, TypeDenotationByte, OutputSelector, &inputsArrayRules, func(err error) error {
 			return fmt.Errorf("unable to deserialize outputs of transaction essence: %w", err)
 		}).
 		AbortIf(func(err error) error {
@@ -160,8 +160,13 @@ func (u *TransactionEssence) Deserialize(data []byte, deSeriMode DeSerialization
 func (u *TransactionEssence) Serialize(deSeriMode DeSerializationMode) (data []byte, err error) {
 	var inputsWrittenConsumer, outputsWrittenConsumer WrittenObjectConsumer
 	if deSeriMode.HasMode(DeSeriModePerformValidation) {
-		if inputsArrayBound.ElementBytesLexicalOrder {
-			inputsLexicalOrderValidator := inputsArrayBound.LexicalOrderValidator()
+		if u.Payload != nil {
+			if _, isIndexationPayload := u.Payload.(*Indexation); !isIndexationPayload {
+				return nil, fmt.Errorf("%w: transaction essences only allow embedded indexation payloads but got %T instead", ErrInvalidBytes, u.Payload)
+			}
+		}
+		if inputsArrayRules.ElementBytesLexicalOrder {
+			inputsLexicalOrderValidator := inputsArrayRules.LexicalOrderValidator()
 			inputsWrittenConsumer = func(index int, written []byte) error {
 				if err := inputsLexicalOrderValidator(index, written); err != nil {
 					return fmt.Errorf("%w: unable to serialize inputs of transaction essence since inputs are not in lexical order", err)
@@ -169,8 +174,8 @@ func (u *TransactionEssence) Serialize(deSeriMode DeSerializationMode) (data []b
 				return nil
 			}
 		}
-		if outputsArrayBound.ElementBytesLexicalOrder {
-			outputsLexicalOrderValidator := outputsArrayBound.LexicalOrderValidator()
+		if outputsArrayRules.ElementBytesLexicalOrder {
+			outputsLexicalOrderValidator := outputsArrayRules.LexicalOrderValidator()
 			outputsWrittenConsumer = func(index int, written []byte) error {
 				if err := outputsLexicalOrderValidator(index, written); err != nil {
 					return fmt.Errorf("%w: unable to serialize outputs of transaction essence since outputs are not in lexical order", err)
