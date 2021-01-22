@@ -3,10 +3,12 @@ package pow
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"math/bits"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	legacy "github.com/iotaledger/iota.go/consts"
 	"github.com/iotaledger/iota.go/curl/bct"
@@ -66,6 +68,8 @@ func (w *Worker) Mine(ctx context.Context, data []byte, targetScore float64) (ui
 		}
 	}()
 
+	start := time.Now()
+
 	// compute the minimum numbers of trailing zeros required to get a PoW score ≥ targetScore
 	targetZeros := uint(math.Ceil(math.Log(float64(len(data)+nonceBytes)*targetScore) / ln3))
 
@@ -84,6 +88,22 @@ func (w *Worker) Mine(ctx context.Context, data []byte, targetScore float64) (ui
 			results <- nonce
 		}()
 	}
+
+	go func() {
+		tick := time.NewTicker(5 * time.Second)
+		defer tick.Stop()
+		for {
+			select {
+			case <-tick.C:
+				count := atomic.LoadUint64(&counter)
+				elapsed := time.Since(start)
+				fmt.Printf("Hashrate: %.0f H/s\n", float64(count)/elapsed.Seconds())
+			case <-closing:
+				return
+			}
+		}
+	}()
+
 	wg.Wait()
 	close(results)
 	close(closing)
